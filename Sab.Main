@@ -1,0 +1,781 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/nebronebro68-byte/Sab/refs/heads/main/README.md"))()
+
+if getgenv().CP_Loaded then
+    warn("[CP] السكربت شغال بالفعل — أعد دخول اللعبة لنسخة جديدة")
+    return
+end
+getgenv().CP_Loaded = true
+
+local ok, err = pcall(function()
+
+    -- ===== الإعدادات =====
+    getgenv().CP_Config = getgenv().CP_Config or {
+        AntiKick       = true,
+        AntiBan        = true,
+        AntiSnapBack   = true,
+        AutoTPOnSpawn  = true,
+        UseRemoteQuery = false,    -- true فقط مع وجود سكربت سيرفر
+        SendToServer   = true,     -- لا أثر بدون سكربت سيرفر (no-op آمن)
+        ServerTP       = true,     -- نفس الكلام
+        SmoothTP       = true,     -- TP تدريجي
+        LockAfterTP    = 2,        -- قفل الموقع ثانيتين بعد الـ TP
+        BlockAntiCheat = false,    -- ⚠ خليها false حتى لا نحظر ريموتات اللعبة الحقيقية بالغلط
+        ProtectGUI     = true,
+        AutoRejoin     = false,    -- أعد التشغيل تلقائيًا بعد تغيير السيرفر
+        ToggleKey      = Enum.KeyCode.K,
+        BlockedRemotes = {},       -- أسماء ريموتات إضافية للحظر (اختياري)
+    }
+
+    local Players      = game:GetService("Players")
+    local UIS          = game:GetService("UserInputService")
+    local RunService   = game:GetService("RunService")
+    local TweenService = game:GetService("TweenService")
+    local RS           = game:GetService("ReplicatedStorage")
+
+    local LP = Players.LocalPlayer
+    if not LP then
+        repeat task.wait() until Players.LocalPlayer
+        LP = Players.LocalPlayer
+    end
+
+    local Checkpoints  = {}
+    local Selected     = 0
+    local TPTime       = 0
+    local UI           = nil
+    local ClosedByUser = false
+    local Rebuilds     = 0
+    local Dragging     = false
+    local dragStart    = Vector2.zero
+    local guiStart     = UDim2.new()
+    local DoTP         = nil   -- تعريف مسبق (إصلاح خطأ forward-reference)
+
+    -- ===== الريموتات (تشتغل فقط مع سكربت السيرفر — غير ضارة بدونه) =====
+    local CP_Folder = RS:FindFirstChild("CP_System")
+    if not CP_Folder then
+        CP_Folder = Instance.new("Folder")
+        CP_Folder.Name = "CP_System"
+        CP_Folder.Parent = RS
+    end
+
+    local function GetOrCreate(class, name)
+        local i = CP_Folder:FindFirstChild(name)
+        if i then return i end
+        i = Instance.new(class)
+        i.Name = name
+        i.Parent = CP_Folder
+        return i
+    end
+
+    local SaveRemote  = GetOrCreate("RemoteEvent",    "CP_SaveCheckpoint")
+    local TPRemote    = GetOrCreate("RemoteEvent",    "CP_TeleportToCheckpoint")
+    local QueryRemote = GetOrCreate("RemoteFunction", "CP_GetCheckpoints")
+
+    -- ===== الحماية: Anti-Kick / Anti-Ban (مع fallback آمن) =====
+    local Wrap = (type(newcclosure) == "function" and newcclosure) or function(f) return f end
+
+    local BadKeywords = {
+        "ban", "kick", "punish", "warn", "mute", "freeze", "jail",
+        "report", "anticheat", "anti-cheat", "detect", "exploit",
+        "cheat", "teleportback", "snapback", "tpback", "verify"
+    }
+
+    local HookOK = false
+    local OldNC  = nil
+
+    if type(hookmetamethod) == "function" and type(getnamecallmethod) == "function" then
+        local function HookFn(self, ...)
+            local okBlock, blocked = pcall(function()
+                local Method = tostring(getnamecallmethod()):lower()
+                local Cfg = getgenv().CP_Config
+                local Args = { ... }
+
+                if Cfg.AntiKick and Method == "kick" then
+                    if self == LP or (self == Players and Args[1] == LP) then return true end
+                end
+                if Cfg.AntiBan and (Method == "ban" or Method == "punish") then
+                    if self == LP or (self == Players and Args[1] == LP) then return true end
+                end
+
+                if Cfg.BlockAntiCheat and (Method == "fireserver" or Method == "invokeserver") then
+                    local rn = tostring(self.Name):lower()
+                    for i = 1, #Cfg.BlockedRemotes do
+                        if rn:find(tostring(Cfg.BlockedRemotes[i]):lower(), 1, true) then return true end
+                    end
+                    for i = 1, #BadKeywords do
+                        if rn:find(BadKeywords[i], 1, true) then return true end
+                    end
+                end
+
+                return false
+            end)
+
+            if okBlock and blocked then return end
+            return OldNC(self, ...)
+        end
+
+        HookOK = pcall(function()
+            OldNC = hookmetamethod(game, "__namecall", Wrap(HookFn))
+        end)
+        if not HookOK and type(getrawmetatable) == "function" then
+            HookOK = pcall(function()
+                OldNC = hookmetamethod(getrawmetatable(game), "__namecall", Wrap(HookFn))
+            end)
+        end
+        HookOK = (HookOK and type(OldNC) == "function")
+    end
+
+    if not HookOK then
+        warn("[CP] ⚠ Hook غير مدعوم — حماية جزئية فقط، الواجهة تعمل طبيعي")
+    end
+
+    -- ===== Anti-SnapBack + قفل الموقع =====
+    local LastFramePos = nil
+
+    RunService.Heartbeat:Connect(function()
+        local Cfg = getgenv().CP_Config
+        local cf = Checkpoints[Selected]
+        if not cf or not Cfg.AntiSnapBack then LastFramePos = nil; return end
+        if (os.clock() - TPTime) > Cfg.LockAfterTP then LastFramePos = nil; return end
+
+        local char = LP.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then LastFramePos = nil; return end
+
+        local p = hrp.Position
+        if LastFramePos then
+            local jump = (p - LastFramePos).Magnitude
+            if jump > 40 then
+                hrp.CFrame = cf
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                hrp.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        LastFramePos = hrp.Position
+
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    -- ===== ألوان + توست =====
+    local C = {
+        bg = Color3.fromRGB(9, 11, 20), panel = Color3.fromRGB(14, 17, 28),
+        panel2 = Color3.fromRGB(22, 26, 42), accent = Color3.fromRGB(0, 229, 255),
+        purple = Color3.fromRGB(168, 85, 247), pink = Color3.fromRGB(255, 80, 160),
+        green = Color3.fromRGB(0, 210, 130), red = Color3.fromRGB(255, 70, 95),
+        text = Color3.fromRGB(238, 241, 255), sub = Color3.fromRGB(138, 146, 178),
+    }
+
+    local function Toast(msg, color)
+        if not (UI and UI.Toast and UI.Toast.Parent) then return end
+        local t = UI.Toast
+        local okLen, n = pcall(utf8.len, msg)
+        local mlen = okLen and n or #msg
+        local w = math.clamp(mlen * 7.2 + 44, 96, 300)
+
+        t.Text = msg
+        t.TextColor3 = color or C.accent
+        t.Visible = true
+        t.BackgroundTransparency = 0.05
+        t.TextTransparency = 0
+        t.Size = UDim2.new(0, w, 0, 28)
+        TweenService:Create(t, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Position = UDim2.new(0.5, -w / 2, 0, 8)
+        }):Play()
+
+        task.delay(1.7, function()
+            if t and t.Parent then
+                TweenService:Create(t, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                    TextTransparency = 1, BackgroundTransparency = 1
+                }):Play()
+                task.delay(0.32, function()
+                    if t and t.Parent then t.Visible = false end
+                end)
+            end
+        end)
+    end
+
+    -- ===== دالة الـ TP (تُعرَّف هنا قبل استخدامها في الموت) =====
+    DoTP = function(cf)
+        local char = LP.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return false end
+
+        local Cfg = getgenv().CP_Config
+
+        if UI and UI.Flash then
+            UI.Flash.BackgroundTransparency = 1
+            TweenService:Create(UI.Flash, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundTransparency = 0.55 }):Play()
+            task.delay(0.12, function()
+                if UI and UI.Flash then
+                    TweenService:Create(UI.Flash, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { BackgroundTransparency = 1 }):Play()
+                end
+            end)
+        end
+
+        if Cfg.SmoothTP then
+            local start = hrp.CFrame
+            for i = 1, 6 do
+                local a = i / 6
+                hrp.CFrame = start:Lerp(cf, a)
+                hrp.AssemblyLinearVelocity = Vector3.zero
+                task.wait(0.02)
+            end
+        else
+            hrp.CFrame = cf
+        end
+
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        TPTime = os.clock()
+        return true
+    end
+
+    -- ===== Auto-TP بعد الموت (يعمل الآن بشكل صحيح) =====
+    LP.CharacterAdded:Connect(function(char)
+        local Cfg = getgenv().CP_Config
+        if Cfg.AutoTPOnSpawn and Checkpoints[Selected] then
+            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+            if hrp then
+                task.wait(0.6)
+                pcall(function() DoTP(Checkpoints[Selected]) end)
+            end
+        end
+    end)
+
+    -- ===== بناء الواجهة =====
+    local function BuildUI()
+        local Cfg = getgenv().CP_Config
+
+        local GuiParent
+        if Cfg.ProtectGUI and type(gethui) == "function" then
+            local okH, h = pcall(gethui)
+            if okH and h then GuiParent = h end
+        end
+        if not GuiParent then
+            local okC, cg = pcall(function() return game:GetService("CoreGui") end)
+            if okC and cg then GuiParent = cg end
+        end
+        if not GuiParent then GuiParent = LP:WaitForChild("PlayerGui") end
+
+        local Old = GuiParent:FindFirstChild("CP_CheckpointHub_v4")
+        if Old then Old:Destroy() end
+
+        local SG = Instance.new("ScreenGui")
+        SG.Name = "CP_CheckpointHub_v4"
+        SG.ResetOnSpawn = false
+        SG.IgnoreGuiInset = true
+        SG.DisplayOrder = 999999
+        SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        if type(protect_gui) == "function" then pcall(protect_gui, SG) end
+        SG.Parent = GuiParent
+
+        local Shadow = Instance.new("Frame")
+        Shadow.Size = UDim2.new(0, 324, 0, 208)
+        Shadow.BackgroundColor3 = Color3.new(0, 0, 0)
+        Shadow.BackgroundTransparency = 0.55
+        Shadow.BorderSizePixel = 0
+        Shadow.ZIndex = 0
+        local ShadowCorner = Instance.new("UICorner"); ShadowCorner.CornerRadius = UDim.new(0, 18); ShadowCorner.Parent = Shadow
+        Shadow.Parent = SG
+
+        local Main = Instance.new("Frame")
+        Main.Size = UDim2.new(0, 320, 0, 204)
+        Main.Position = UDim2.new(0.5, -160, 0.4, -102)
+        Main.BackgroundColor3 = C.bg
+        Main.BorderSizePixel = 0
+        Main.Active = true
+        Main.ZIndex = 1
+        local MainCorner = Instance.new("UICorner"); MainCorner.CornerRadius = UDim.new(0, 16); MainCorner.Parent = Main
+        local MainStroke = Instance.new("UIStroke")
+        MainStroke.Color = Color3.fromRGB(255, 255, 255)
+        MainStroke.Transparency = 0.88
+        MainStroke.Thickness = 1
+        MainStroke.Parent = Main
+
+        local TopBar = Instance.new("Frame")
+        TopBar.Size = UDim2.new(1, 0, 0, 44)
+        TopBar.BackgroundTransparency = 1
+        TopBar.ZIndex = 2
+        TopBar.Parent = Main
+
+        local Title = Instance.new("TextLabel")
+        Title.Size = UDim2.new(1, -100, 0, 20)
+        Title.Position = UDim2.new(0, 14, 0, 7)
+        Title.BackgroundTransparency = 1
+        Title.Text = "⚡ Checkpoint Hub"
+        Title.TextColor3 = C.text
+        Title.TextSize = 16
+        Title.Font = Enum.Font.GothamBold
+        Title.TextXAlignment = Enum.TextXAlignment.Left
+        Title.Parent = TopBar
+
+        local Sub = Instance.new("TextLabel")
+        Sub.Size = UDim2.new(1, -100, 0, 14)
+        Sub.Position = UDim2.new(0, 14, 0, 25)
+        Sub.BackgroundTransparency = 1
+        Sub.Text = "v4 ULTRA FIXED  •  Delta  •  🛡 Protection ON"
+        Sub.TextColor3 = C.sub
+        Sub.TextSize = 10
+        Sub.Font = Enum.Font.Gotham
+        Sub.TextXAlignment = Enum.TextXAlignment.Left
+        Sub.Parent = TopBar
+
+        local function MakeIconBtn(x, txt, base, hover)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(0, 26, 0, 26)
+            b.Position = UDim2.new(1, x, 0, 9)
+            b.BackgroundColor3 = base
+            b.BorderSizePixel = 0
+            b.Text = txt
+            b.TextColor3 = Color3.new(1, 1, 1)
+            b.TextSize = 12
+            b.Font = Enum.Font.GothamBold
+            local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 8); c.Parent = b
+            b.Parent = TopBar
+            b.MouseEnter:Connect(function()
+                TweenService:Create(b, TweenInfo.new(0.15), { BackgroundColor3 = hover }):Play()
+            end)
+            b.MouseLeave:Connect(function()
+                TweenService:Create(b, TweenInfo.new(0.2), { BackgroundColor3 = base }):Play()
+            end)
+            return b
+        end
+
+        local ClearBtn = MakeIconBtn(-84, "🗑", Color3.fromRGB(70, 45, 50), Color3.fromRGB(160, 60, 70))
+        local MiniBtn  = MakeIconBtn(-56, "–", Color3.fromRGB(50, 55, 80), Color3.fromRGB(90, 100, 140))
+        local CloseBtn = MakeIconBtn(-28, "✕", Color3.fromRGB(120, 40, 50), Color3.fromRGB(230, 60, 80))
+
+        local Accent = Instance.new("Frame")
+        Accent.Size = UDim2.new(1, -24, 0, 3)
+        Accent.Position = UDim2.new(0, 12, 0, 46)
+        Accent.BackgroundColor3 = C.accent
+        Accent.BorderSizePixel = 0
+        local AccentCorner = Instance.new("UICorner"); AccentCorner.CornerRadius = UDim.new(0, 2); AccentCorner.Parent = Accent
+        local AccentGrad = Instance.new("UIGradient")
+        AccentGrad.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, C.accent),
+            ColorSequenceKeypoint.new(0.5, C.purple),
+            ColorSequenceKeypoint.new(1, C.pink)
+        })
+        AccentGrad.Parent = Accent
+        Accent.Parent = Main
+
+        local function MakeBtn(x, w, y, text, grad1, grad2)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(0, w, 0, 38)
+            b.Position = UDim2.new(0, x, 0, y)
+            b.BackgroundColor3 = grad2
+            b.BorderSizePixel = 0
+            b.Text = text
+            b.TextColor3 = Color3.new(1, 1, 1)
+            b.TextSize = 13
+            b.Font = Enum.Font.GothamBold
+            local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 10); c.Parent = b
+            local g = Instance.new("UIGradient")
+            g.Color = ColorSequence.new(grad1, grad2)
+            g.Parent = b
+            local s = Instance.new("UIStroke")
+            s.Color = Color3.fromRGB(255, 255, 255)
+            s.Transparency = 0.92
+            s.Thickness = 1
+            s.Parent = b
+            b.Parent = Main
+            return b
+        end
+
+        local SetBtn = MakeBtn(12, 142, 56, "📍 Set Point", Color3.fromRGB(0, 230, 140), Color3.fromRGB(0, 150, 90))
+        local TPBtn  = MakeBtn(166, 142, 56, "⚡ Teleport", Color3.fromRGB(0, 200, 255), Color3.fromRGB(90, 90, 255))
+
+        local PrevBtn = Instance.new("TextButton")
+        PrevBtn.Size = UDim2.new(0, 34, 0, 34)
+        PrevBtn.Position = UDim2.new(0, 12, 0, 102)
+        PrevBtn.BackgroundColor3 = C.panel2
+        PrevBtn.BorderSizePixel = 0
+        PrevBtn.Text = "◀"
+        PrevBtn.TextColor3 = C.text
+        PrevBtn.TextSize = 14
+        PrevBtn.Font = Enum.Font.GothamBold
+        local PrevCorner = Instance.new("UICorner"); PrevCorner.CornerRadius = UDim.new(0, 9); PrevCorner.Parent = PrevBtn
+        PrevBtn.Parent = Main
+
+        local NextBtn = PrevBtn:Clone()
+        NextBtn.Position = UDim2.new(0, 50, 0, 102)
+        NextBtn.Text = "▶"
+        NextBtn.Parent = Main
+
+        local Counter = Instance.new("TextLabel")
+        Counter.Size = UDim2.new(0, 196, 0, 34)
+        Counter.Position = UDim2.new(0, 112, 0, 102)
+        Counter.BackgroundColor3 = C.panel2
+        Counter.BorderSizePixel = 0
+        Counter.Text = "📍 Checkpoint  0 / 0"
+        Counter.TextColor3 = C.text
+        Counter.TextSize = 12
+        Counter.Font = Enum.Font.GothamBold
+        local CounterCorner = Instance.new("UICorner"); CounterCorner.CornerRadius = UDim.new(0, 9); CounterCorner.Parent = Counter
+        Counter.Parent = Main
+
+        local Status = Instance.new("TextLabel")
+        Status.Size = UDim2.new(1, -24, 0, 30)
+        Status.Position = UDim2.new(0, 12, 0, 144)
+        Status.BackgroundColor3 = C.panel2
+        Status.BorderSizePixel = 0
+        Status.Text = "🛡 Ready — Protection: ON"
+        Status.TextColor3 = C.green
+        Status.TextSize = 12
+        Status.Font = Enum.Font.GothamBold
+        local StatusCorner = Instance.new("UICorner"); StatusCorner.CornerRadius = UDim.new(0, 9); StatusCorner.Parent = Status
+        Status.Parent = Main
+
+        local Dot = Instance.new("Frame")
+        Dot.Size = UDim2.new(0, 8, 0, 8)
+        Dot.Position = UDim2.new(0, 8, 0, 11)
+        Dot.BackgroundColor3 = C.green
+        Dot.BorderSizePixel = 0
+        local DotCorner = Instance.new("UICorner"); DotCorner.CornerRadius = UDim.new(1, 0); DotCorner.Parent = Dot
+        Dot.Parent = Status
+
+        local Hint = Instance.new("TextLabel")
+        Hint.Size = UDim2.new(1, -20, 0, 18)
+        Hint.Position = UDim2.new(0, 10, 0, 180)
+        Hint.BackgroundTransparency = 1
+        Hint.Text = "K — إخفاء/إظهار   •   اسحب من الشريط العلوي"
+        Hint.TextColor3 = C.sub
+        Hint.TextSize = 10
+        Hint.Font = Enum.Font.Gotham
+        Hint.Parent = Main
+
+        local ToastLbl = Instance.new("TextLabel")
+        ToastLbl.Size = UDim2.new(0, 160, 0, 28)
+        ToastLbl.Position = UDim2.new(0.5, -80, 0, 8)
+        ToastLbl.BackgroundColor3 = C.panel2
+        ToastLbl.BackgroundTransparency = 1
+        ToastLbl.BorderSizePixel = 0
+        ToastLbl.Text = ""
+        ToastLbl.TextColor3 = C.accent
+        ToastLbl.TextSize = 12
+        ToastLbl.Font = Enum.Font.GothamBold
+        ToastLbl.ZIndex = 50
+        ToastLbl.Visible = false
+        local ToastCorner = Instance.new("UICorner"); ToastCorner.CornerRadius = UDim.new(0, 10); ToastCorner.Parent = ToastLbl
+        local ToastStroke = Instance.new("UIStroke")
+        ToastStroke.Color = C.accent
+        ToastStroke.Transparency = 0.7
+        ToastStroke.Parent = ToastLbl
+        ToastLbl.Parent = SG
+
+        local Pill = Instance.new("TextButton")
+        Pill.Size = UDim2.new(0, 64, 0, 30)
+        Pill.Position = Main.Position
+        Pill.BackgroundColor3 = C.panel
+        Pill.BorderSizePixel = 0
+        Pill.Text = "⚡ CP"
+        Pill.TextColor3 = C.text
+        Pill.TextSize = 12
+        Pill.Font = Enum.Font.GothamBold
+        Pill.Visible = false
+        Pill.ZIndex = 3
+        local PillCorner = Instance.new("UICorner"); PillCorner.CornerRadius = UDim.new(1, 0); PillCorner.Parent = Pill
+        local PillStroke = Instance.new("UIStroke")
+        PillStroke.Color = C.accent
+        PillStroke.Transparency = 0.4
+        PillStroke.Parent = Pill
+        Pill.Parent = SG
+
+        local Flash = Instance.new("Frame")
+        Flash.Size = UDim2.new(1, 0, 1, 0)
+        Flash.BackgroundColor3 = Color3.new(0, 0, 0)
+        Flash.BackgroundTransparency = 1
+        Flash.BorderSizePixel = 0
+        Flash.ZIndex = 500
+        Flash.Parent = SG
+
+        Main.Parent = SG
+
+        local GT_OK = pcall(function()
+            Main.GroupTransparency = 0
+            return Main.GroupTransparency == 0
+        end)
+
+        local function HoverScale(btn)
+            local base = btn.BackgroundColor3
+            local sc = Instance.new("UIScale"); sc.Scale = 1; sc.Parent = btn
+            btn.MouseEnter:Connect(function()
+                TweenService:Create(sc, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1.04 }):Play()
+                TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(math.min(base.R * 255 + 25, 255), math.min(base.G * 255 + 25, 255), math.min(base.B * 255 + 25, 255)) }):Play()
+            end)
+            btn.MouseLeave:Connect(function()
+                TweenService:Create(sc, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+                TweenService:Create(btn, TweenInfo.new(0.25), { BackgroundColor3 = base }):Play()
+            end)
+            btn.MouseButton1Down:Connect(function()
+                TweenService:Create(sc, TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 0.92 }):Play()
+            end)
+            btn.MouseButton1Up:Connect(function()
+                TweenService:Create(sc, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+            end)
+        end
+
+        HoverScale(SetBtn); HoverScale(TPBtn); HoverScale(PrevBtn); HoverScale(NextBtn)
+
+        local function Pop(obj)
+            local sc = obj:FindFirstChildOfClass("UIScale") or Instance.new("UIScale")
+            sc.Parent = obj
+            sc.Scale = 1
+            TweenService:Create(sc, TweenInfo.new(0.09, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1.15 }):Play()
+            task.delay(0.1, function()
+                TweenService:Create(sc, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+            end)
+        end
+
+        TweenService:Create(AccentGrad, TweenInfo.new(2.4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, true), { Offset = Vector2.new(1, 0) }):Play()
+
+        local dotScale = Instance.new("UIScale"); dotScale.Parent = Dot
+        TweenService:Create(dotScale, TweenInfo.new(0.55, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Scale = 1.35 }):Play()
+
+        local function AnimateIn()
+            local sc = Main:FindFirstChildOfClass("UIScale") or Instance.new("UIScale")
+            sc.Parent = Main
+            sc.Scale = 0.9
+            if GT_OK then Main.GroupTransparency = 1 end
+            Main.Position = Main.Position + UDim2.new(0, -30, 0, 0)
+
+            TweenService:Create(sc, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+            TweenService:Create(Main, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = Main.Position + UDim2.new(0, 30, 0, 0) }):Play()
+            if GT_OK then
+                TweenService:Create(Main, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { GroupTransparency = 0 }):Play()
+            end
+        end
+
+        TopBar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                Dragging = true
+                if input.UserInputType == Enum.UserInputType.Touch then
+                    dragStart = Vector2.new(input.Position.X, input.Position.Y)
+                else
+                    dragStart = UIS:GetMousePosition()
+                end
+                guiStart = Main.Position
+            end
+        end)
+
+        local function SetVisible(show)
+            if not (SG and SG.Parent) then return end
+            if not show then
+                if GT_OK then
+                    TweenService:Create(Main, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { GroupTransparency = 1 }):Play()
+                    task.delay(0.13, function()
+                        if SG and SG.Parent then SG.Enabled = false end
+                    end)
+                else
+                    SG.Enabled = false
+                end
+                return
+            end
+            SG.Enabled = true
+            AnimateIn()
+        end
+
+        local function UpdateUI(popIt)
+            if #Checkpoints == 0 then
+                Counter.Text = "📍 Checkpoint  0 / 0"
+                Status.Text = "⚠ No Checkpoints Yet"
+                Status.TextColor3 = C.red
+            else
+                Counter.Text = string.format("📍 Checkpoint  %d / %d", Selected, #Checkpoints)
+                Status.Text = string.format("✅ Checkpoint Created: %d", Selected)
+                Status.TextColor3 = C.green
+            end
+            if popIt then Pop(Status) end
+        end
+
+        SetBtn.MouseButton1Click:Connect(function()
+            local char = LP.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if not hrp then Toast("⚠ No Character!", C.red); return end
+            Selected = #Checkpoints + 1
+            Checkpoints[Selected] = hrp.CFrame
+            UpdateUI(true)
+            Toast("✅ Saved CP #" .. Selected, C.green)
+            if Cfg.SendToServer then
+                SaveRemote:FireServer(hrp.CFrame)
+            end
+        end)
+
+        TPBtn.MouseButton1Click:Connect(function()
+            local cf = Checkpoints[Selected]
+            if not cf then
+                Toast("⚠ Set a checkpoint first!", C.red)
+                return
+            end
+            if DoTP(cf) then
+                Toast("⚡ TP → CP #" .. Selected, C.accent)
+                if Cfg.SendToServer and Cfg.ServerTP then
+                    TPRemote:FireServer(Selected)
+                end
+            end
+        end)
+
+        PrevBtn.MouseButton1Click:Connect(function()
+            if #Checkpoints == 0 then return end
+            Selected = Selected - 1
+            if Selected < 1 then Selected = #Checkpoints end
+            UpdateUI(true)
+        end)
+
+        NextBtn.MouseButton1Click:Connect(function()
+            if #Checkpoints == 0 then return end
+            Selected = Selected + 1
+            if Selected > #Checkpoints then Selected = 1 end
+            UpdateUI(true)
+        end)
+
+        ClearBtn.MouseButton1Click:Connect(function()
+            Checkpoints = {}
+            Selected = 0
+            UpdateUI(true)
+            Toast("🗑 All checkpoints cleared", C.sub)
+            if Cfg.SendToServer then
+                SaveRemote:FireServer("clear")
+            end
+        end)
+
+        MiniBtn.MouseButton1Click:Connect(function()
+            Main.Visible = false
+            Shadow.Visible = false
+            Pill.Visible = true
+            Pill.Position = Main.Position
+        end)
+
+        Pill.MouseButton1Click:Connect(function()
+            Pill.Visible = false
+            Main.Visible = true
+            Shadow.Visible = true
+            AnimateIn()
+        end)
+
+        CloseBtn.MouseButton1Click:Connect(function()
+            ClosedByUser = true
+            SG:Destroy()
+        end)
+
+        if Cfg.UseRemoteQuery then
+            task.spawn(function()
+                local okQ, res = pcall(function() return QueryRemote:InvokeServer() end)
+                if okQ and type(res) == "table" and res.list then
+                    for i, cf in ipairs(res.list) do Checkpoints[i] = cf end
+                    Selected = math.clamp(res.selected or 0, 0, #Checkpoints)
+                    if #Checkpoints > 0 then UpdateUI(true) end
+                end
+            end)
+        end
+
+        return {
+            SG = SG, Main = Main, Shadow = Shadow, Flash = Flash,
+            Toast = ToastLbl, GT_OK = GT_OK, SetVisible = SetVisible,
+        }
+    end
+
+    -- ===== التشغيل =====
+    UI = BuildUI()
+
+    UI.SG.Destroying:Connect(function()
+        if ClosedByUser then return end
+        if Rebuilds >= 5 then return end
+        Rebuilds = Rebuilds + 1
+        task.delay(0.7, function()
+            if not ClosedByUser then
+                pcall(function() UI = BuildUI() end)
+            end
+        end)
+    end)
+
+    RunService.RenderStepped:Connect(function()
+        if UI and UI.Main and UI.Shadow and UI.Main.Parent then
+            UI.Shadow.Position = UI.Main.Position + UDim2.new(0, 7, 0, 7)
+        end
+    end)
+
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            Dragging = false
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input, gpe)
+        if not Dragging then return end
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+            local now
+            if input.UserInputType == Enum.UserInputType.Touch then
+                now = Vector2.new(input.Position.X, input.Position.Y)
+            else
+                now = UIS:GetMousePosition()
+            end
+            local delta = now - dragStart
+            if UI and UI.Main then
+                UI.Main.Position = UDim2.new(guiStart.X.Scale, guiStart.X.Offset + delta.X,
+                                             guiStart.Y.Scale, guiStart.Y.Offset + delta.Y)
+            end
+        end
+    end)
+
+    UIS.InputBegan:Connect(function(input, gpe)
+        if gpe then return end
+        if input.KeyCode == getgenv().CP_Config.ToggleKey then
+            if UI and UI.SG and UI.SG.Parent then
+                UI.SetVisible(not UI.SG.Enabled)
+            end
+        end
+    end)
+
+    if getgenv().CP_Config.AutoRejoin and type(queue_on_teleport) == "function" then
+        queue_on_teleport('loadstring(game:HttpGet("https://pastebin.com/raw/ضع_رابط_الكلاينت_هنا"))()')
+    end
+
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Checkpoint Hub v4",
+            Text = "✅ تم التحميل — زر K للإخفاء",
+            Duration = 3
+        })
+    end)
+
+    print("✅ Checkpoint Hub v4 ULTRA loaded — protections: ON")
+end)
+
+if not ok then
+    getgenv().CP_Loaded = nil
+    warn("[CP] ❌ حصل خطأ: " .. tostring(err))
+    pcall(function()
+        local par
+        if type(gethui) == "function" then
+            local okH, h = pcall(gethui)
+            par = okH and h or nil
+        end
+        local sg = Instance.new("ScreenGui")
+        sg.Name = "CP_ErrorView"
+        sg.ResetOnSpawn = false
+        sg.DisplayOrder = 999999
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(0, 480, 0, 170)
+        f.Position = UDim2.new(0.5, -240, 0.5, -85)
+        f.BackgroundColor3 = Color3.fromRGB(25, 10, 15)
+        f.BorderSizePixel = 0
+        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 12)
+        local t = Instance.new("TextLabel")
+        t.Size = UDim2.new(1, -24, 1, -24)
+        t.Position = UDim2.new(0, 12, 0, 12)
+        t.BackgroundTransparency = 1
+        t.TextWrapped = true
+        t.Text = "❌ خطأ أثناء التحميل:\n" .. tostring(err)
+        t.TextColor3 = Color3.fromRGB(255, 120, 140)
+        t.TextSize = 13
+        t.Font = Enum.Font.Gotham
+        t.Parent = f
+        f.Parent = sg
+        sg.Parent = par or game:GetService("CoreGui")
+    end)
+end
