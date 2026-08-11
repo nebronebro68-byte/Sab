@@ -1,0 +1,1473 @@
+
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local SoundService = game:GetService("SoundService")
+
+local LocalPlayer = Players.LocalPlayer
+local ADMIN_ID = 11169216887 -- Your Roblox User ID
+local REQUIRED_KEY = "Haroon1211" -- The key for the Key System
+
+local HaroonWindUI = {}
+HaroonWindUI.__index = HaroonWindUI
+
+-- Color Palette (Red & Black Theme)
+HaroonWindUI.Theme = {
+    Background = Color3.fromRGB(12, 12, 16),      -- Darker charcoal
+    Sidebar = Color3.fromRGB(18, 18, 24),         -- Slightly lighter sidebar
+    Card = Color3.fromRGB(28, 28, 36),            -- Component background
+    CardHover = Color3.fromRGB(40, 40, 52),       -- Component hover state
+    AccentRed = Color3.fromRGB(230, 35, 60),      -- Crimson Red accent
+    IndicatorBlue = Color3.fromRGB(0, 140, 255),  -- Tab indicator (blue as requested)
+    TextActive = Color3.fromRGB(255, 255, 255),   -- White text for active elements
+    TextInactive = Color3.fromRGB(150, 150, 170), -- Grey text for inactive elements
+    SubText = Color3.fromRGB(170, 170, 190),      -- Lighter grey for sub-text
+    Border = Color3.fromRGB(50, 50, 65),          -- Darker border
+    ToggleOff = Color3.fromRGB(45, 45, 58),       -- Toggle off state color
+    MultiSelectSelected = Color3.fromRGB(60, 60, 80), -- Background for selected dropdown items
+    NotificationClose = Color3.fromRGB(255, 50, 50), -- Red for notification close button
+    KeySystemBg = Color3.fromRGB(20, 20, 28),     -- Darker background for key system
+    KeySystemAccent = Color3.fromRGB(60, 120, 255), -- Blue accent for key system buttons
+    LoadingBg = Color3.fromRGB(25, 25, 35)        -- Dark background for loading screen
+}
+
+-- Icons & Sounds
+local ICONS = {
+    Close = "rbxassetid://96287149287629",
+    Minimize = "rbxassetid://121960953523495", -- Minus sign for expanded state
+    Maximize = "rbxassetid://15928997778", -- Plus sign for minimized state
+    Verified = "rbxassetid://90637005932446",
+    ButtonDefault = "rbxassetid://7158102700", -- Default button icon
+    Checkmark = "rbxassetid://3926305904", -- Generic checkmark icon for multi-select
+    ToggleUI = "rbxassetid://78282125662320", -- New icon for the movable UI toggle button
+    LoadingSpinner = "rbxassetid://6031206606" -- Generic gear icon for loading spinner
+}
+
+local SOUNDS = {
+    Notification = "rbxassetid://117653664939966" -- Notification sound asset ID
+}
+
+-- Helper Functions
+local function FastTween(object, time, properties, style, direction)
+    style = style or Enum.EasingStyle.Quart
+    direction = direction or Enum.EasingDirection.Out
+    local info = TweenInfo.new(time, style, direction)
+    local tween = TweenService:Create(object, info, properties)
+    tween:Play()
+    return tween
+end
+
+-- Robust UI Parent Getter for Executors
+local function GetUIParent()
+    -- Prioritize gethui() for executors
+    if gethui then
+        local success, hui = pcall(gethui)
+        if success and hui then
+            return hui
+        end
+    end
+    -- Fallback to CoreGui or PlayerGui if gethui() fails or is not available
+    if CoreGui then
+        return CoreGui
+    end
+    return Players.LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Ultra-Smooth Dragging System
+local function EnableSmoothDrag(frame, handle)
+    local dragging = false
+    local dragInput, dragStart, startPos
+
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            FastTween(frame, 0.12, {
+                Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            }, Enum.EasingStyle.Quad)
+        end
+    end)
+end
+
+-- HSV to RGB Conversion (for Rainbow UIStroke)
+local function HSV_to_RGB(h, s, v)
+    local i = math.floor(h * 6)
+    local f = h * 6 - i
+    local p = v * (1 - s)
+    local q = v * (1 - f * s)
+    local t = v * (1 - (1 - f) * s)
+
+    local r, g, b
+    if i == 0 then r, g, b = v, t, p
+    elseif i == 1 then r, g, b = q, v, p
+    elseif i == 2 then r, g, b = p, v, t
+    elseif i == 3 then r, g, b = p, q, v
+    elseif i == 4 then r, g, b = t, p, v
+    else r, g, b = v, p, q
+    end
+    return Color3.new(r, g, b)
+end
+
+-- Play Notification Sound
+local function PlayNotificationSound()
+    local sound = Instance.new("Sound")
+    sound.SoundId = SOUNDS.Notification
+    sound.Volume = 0.5 -- Adjust volume as needed
+    sound.Parent = GetUIParent() -- Parent to a visible object to play
+    sound:Play()
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+-- Create Window Constructor
+function HaroonWindUI:CreateWindow(config)
+    config = config or {}
+    local windowTitle = config.Title or "Haroon UI"
+    local windowSubtitle = config.SubTitle or "Pro Edition"
+    local defaultSize = UDim2.fromOffset(500, 340) -- Slightly smaller default size
+    local minimizedSize = UDim2.fromOffset(500, 38) -- Only TopBar height
+
+    local parentUI = GetUIParent()
+    if parentUI:FindFirstChild("HaroonWindRedGui") then
+        parentUI:FindFirstChild("HaroonWindRedGui"):Destroy()
+    end
+
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "HaroonWindRedGui"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = parentUI
+
+    -- Main Frame
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.fromOffset(0, 0) -- Start minimized for animation
+    MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0) -- Start centered for animation
+    MainFrame.BackgroundColor3 = HaroonWindUI.Theme.Background
+    MainFrame.BorderSizePixel = 0
+    MainFrame.ClipsDescendants = true
+    MainFrame.Visible = false -- Hidden initially, will be shown after loading
+    MainFrame.Parent = ScreenGui
+
+    local MainCorner = Instance.new("UICorner")
+    MainCorner.CornerRadius = UDim.new(0, 10)
+    MainCorner.Parent = MainFrame
+
+    local MainStroke = Instance.new("UIStroke")
+    MainStroke.Color = HaroonWindUI.Theme.Border -- Initial color, will be rainbow
+    MainStroke.Thickness = 1
+    MainStroke.Parent = MainFrame
+
+    -- Rainbow UIStroke Effect
+    task.spawn(function()
+        local hue = 0
+        while MainFrame.Parent do
+            hue = (hue + 0.005) % 1 -- Increment hue slowly
+            MainStroke.Color = HSV_to_RGB(hue, 1, 1) -- Full saturation, full value
+            task.wait(0.03) -- Update every ~30ms for smooth transition
+        end
+    end)
+
+    -- Header / TopBar
+    local TopBar = Instance.new("Frame")
+    TopBar.Name = "TopBar"
+    TopBar.Size = UDim2.new(1, 0, 0, 50) -- Increased height for title/subtitle
+    TopBar.BackgroundColor3 = HaroonWindUI.Theme.Sidebar
+    TopBar.BorderSizePixel = 0
+    TopBar.Parent = MainFrame
+
+    EnableSmoothDrag(MainFrame, TopBar)
+
+    -- Title Label (smaller)
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(0, 200, 0, 20)
+    TitleLabel.Position = UDim2.new(0, 12, 0, 5)
+    TitleLabel.Text = windowTitle
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextColor3 = HaroonWindUI.Theme.TextActive
+    TitleLabel.TextSize = 13 -- Smaller
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Parent = TopBar
+
+    -- Subtitle Label (below title, smaller)
+    local SubtitleLabel = Instance.new("TextLabel")
+    SubtitleLabel.Size = UDim2.new(0, 200, 0, 15)
+    SubtitleLabel.Position = UDim2.new(0, 12, 0, 25) -- Below TitleLabel
+    SubtitleLabel.Text = windowSubtitle
+    SubtitleLabel.Font = Enum.Font.Gotham
+    SubtitleLabel.TextColor3 = HaroonWindUI.Theme.AccentRed
+    SubtitleLabel.TextSize = 10 -- Smaller
+    SubtitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    SubtitleLabel.BackgroundTransparency = 1
+    SubtitleLabel.Parent = TopBar
+
+    -- TopBar Controls Container (Close, Maximize, Minimize)
+    local ControlsLayout = Instance.new("Frame")
+    ControlsLayout.Size = UDim2.new(0, 90, 1, 0)
+    ControlsLayout.Position = UDim2.new(1, -95, 0, 0)
+    ControlsLayout.BackgroundTransparency = 1
+    ControlsLayout.Parent = TopBar
+
+    local function CreateHeaderButton(iconId, positionOffset, callback)
+        local btn = Instance.new("ImageButton")
+        btn.Size = UDim2.fromOffset(18, 18)
+        btn.Position = UDim2.new(0, positionOffset, 0.5, -9)
+        btn.BackgroundTransparency = 1
+        btn.Image = iconId
+        btn.ImageColor3 = HaroonWindUI.Theme.TextInactive
+        btn.Parent = ControlsLayout
+
+        btn.MouseEnter:Connect(function()
+            FastTween(btn, 0.2, {ImageColor3 = HaroonWindUI.Theme.AccentRed})
+        end)
+        btn.MouseLeave:Connect(function()
+            FastTween(btn, 0.2, {ImageColor3 = HaroonWindUI.Theme.TextInactive})
+        end)
+        btn.MouseButton1Click:Connect(callback)
+        return btn
+    end
+
+    -- Close Button (X icon)
+    CreateHeaderButton(ICONS.Close, 60, function()
+        local closeTween = FastTween(MainFrame, 0.25, {Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1, Position = UDim2.new(0.5, 0, 0.5, 0)})
+        closeTween.Completed:Connect(function()
+            ScreenGui:Destroy()
+            -- Also destroy the movable toggle button if it exists
+            if parentUI:FindFirstChild("HaroonUIToggleButton") then
+                parentUI:FindFirstChild("HaroonUIToggleButton"):Destroy()
+            end
+        end)
+    end)
+
+    -- Sidebar Container
+    local Sidebar = Instance.new("Frame")
+    Sidebar.Name = "Sidebar"
+    Sidebar.Size = UDim2.new(0, 140, 1, -50) -- Adjusted for taller TopBar
+    Sidebar.Position = UDim2.new(0, 0, 0, 50)
+    Sidebar.BackgroundColor3 = HaroonWindUI.Theme.Sidebar
+    Sidebar.BorderSizePixel = 0
+    Sidebar.Visible = true -- Starts visible (expanded)
+    Sidebar.Parent = MainFrame
+
+    local SidebarCorner = Instance.new("UICorner")
+    SidebarCorner.CornerRadius = UDim.new(0, 10)
+    SidebarCorner.Parent = Sidebar
+
+    -- Content Pages Container
+    local ContentContainer = Instance.new("Frame")
+    ContentContainer.Size = UDim2.new(1, -140, 1, -50) -- Adjusted for taller TopBar and smaller sidebar
+    ContentContainer.Position = UDim2.new(0, 140, 0, 50)
+    ContentContainer.BackgroundTransparency = 1
+    ContentContainer.Visible = true -- Starts visible (expanded)
+    ContentContainer.Parent = MainFrame
+
+    local ContentCorner = Instance.new("UICorner")
+    ContentCorner.CornerRadius = UDim.new(0, 10)
+    ContentCorner.Parent = ContentContainer
+
+    -- Minimize/Maximize Button (starts as '-', becomes '+' when minimized)
+    local isMinimized = false -- Window starts expanded
+    local MinimizeMaximizeBtn = CreateHeaderButton(ICONS.Minimize, 32, function()
+        -- FIX: Add robust checks for UI elements before accessing them
+        if not MainFrame or not MainFrame.Parent or not Sidebar or not ContentContainer then
+            warn("HaroonWindUI: Attempted to toggle UI state on destroyed or invalid frames.")
+            return
+        end
+
+        isMinimized = not isMinimized
+        local targetSize = isMinimized and minimizedSize or defaultSize
+        local targetPosition = isMinimized and UDim2.new(0, 0, 0, 0) or UDim2.new(0.5, -defaultSize.X.Offset/2, 0.5, -defaultSize.Y.Offset/2)
+        
+        FastTween(MainFrame, 0.3, {Size = targetSize, Position = targetPosition})
+        
+        -- Toggle visibility of internal frames
+        Sidebar.Visible = not isMinimized
+        ContentContainer.Visible = not isMinimized
+        
+        MinimizeMaximizeBtn.Image = isMinimized and ICONS.Maximize or ICONS.Minimize
+    end)
+
+    local WindowObj = {
+        ScreenGui = ScreenGui,
+        MainFrame = MainFrame,
+        Tabs = {},
+        ActiveTab = nil
+    }
+
+    -- Initial Window Appear Animation (will be triggered after loading screen)
+    -- The window starts expanded, so we tween to defaultSize
+    local function showMainWindow()
+        MainFrame.Visible = true
+        FastTween(MainFrame, 0.4, {
+            Size = defaultSize,
+            Position = UDim2.new(0.5, -defaultSize.X.Offset/2, 0.5, -defaultSize.Y.Offset/2)
+        }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    end
+    WindowObj.Show = showMainWindow -- Expose this function
+
+    -- Vertical Blue Tab Selection Indicator Bar
+    local Indicator = Instance.new("Frame")
+    Indicator.Name = "ActiveTabIndicator"
+    Indicator.Size = UDim2.new(0, 3, 0, 24)
+    Indicator.Position = UDim2.new(0, 0, 0, 10)
+    Indicator.BackgroundColor3 = HaroonWindUI.Theme.IndicatorBlue
+    Indicator.BorderSizePixel = 0
+    Indicator.Visible = false
+    Indicator.Parent = Sidebar
+
+    local IndicatorCorner = Instance.new("UICorner")
+    IndicatorCorner.CornerRadius = UDim.new(0, 4)
+    IndicatorCorner.Parent = Indicator
+
+    -- Tabs Holder Frame
+    local TabsHolder = Instance.new("ScrollingFrame")
+    TabsHolder.Size = UDim2.new(1, 0, 1, -55)
+    TabsHolder.BackgroundTransparency = 1
+    TabsHolder.ScrollBarThickness = 0
+    TabsHolder.Parent = Sidebar
+
+    local TabsList = Instance.new("UIListLayout")
+    TabsList.SortOrder = Enum.SortOrder.LayoutOrder
+    TabsList.Padding = UDim.new(0, 4)
+    TabsList.Parent = TabsHolder
+
+    local TabsPadding = Instance.new("UIPadding")
+    TabsPadding.PaddingTop = UDim.new(0, 6)
+    TabsPadding.PaddingLeft = UDim.new(0, 8)
+    TabsPadding.PaddingRight = UDim.new(0, 8)
+    TabsPadding.Parent = TabsHolder
+
+    -- Sidebar Footer Profile Area
+    local ProfileFrame = Instance.new("Frame")
+    ProfileFrame.Size = UDim2.new(1, 0, 0, 50)
+    ProfileFrame.Position = UDim2.new(0, 0, 1, -50)
+    ProfileFrame.BackgroundColor3 = HaroonWindUI.Theme.Background
+    ProfileFrame.BorderSizePixel = 0
+    ProfileFrame.Parent = Sidebar
+
+    local ProfileCorner = Instance.new("UICorner")
+    ProfileCorner.CornerRadius = UDim.new(0, 10)
+    ProfileCorner.Parent = ProfileFrame
+
+    local ProfileStroke = Instance.new("UIStroke")
+    ProfileStroke.Color = HaroonWindUI.Theme.Border
+    ProfileStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    ProfileStroke.Parent = ProfileFrame
+
+    local AvatarImg = Instance.new("ImageLabel")
+    AvatarImg.Size = UDim2.fromOffset(34, 34)
+    AvatarImg.Position = UDim2.new(0, 8, 0.5, -17)
+    AvatarImg.BackgroundColor3 = HaroonWindUI.Theme.Card
+    AvatarImg.Parent = ProfileFrame
+
+    local AvatarCorner = Instance.new("UICorner")
+    AvatarCorner.CornerRadius = UDim.new(1, 0)
+    AvatarCorner.Parent = AvatarImg
+
+    task.spawn(function()
+        local content, isLoaded = Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+        if isLoaded then AvatarImg.Image = content end
+    end)
+
+    local UserNameLabel = Instance.new("TextLabel")
+    UserNameLabel.Size = UDim2.new(0, 75, 0, 16)
+    UserNameLabel.Position = UDim2.new(0, 46, 0, 8)
+    UserNameLabel.Text = LocalPlayer.DisplayName
+    UserNameLabel.Font = Enum.Font.GothamBold
+    UserNameLabel.TextColor3 = HaroonWindUI.Theme.TextActive
+    UserNameLabel.TextSize = 11
+    UserNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    UserNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    UserNameLabel.BackgroundTransparency = 1
+    UserNameLabel.Parent = ProfileFrame
+
+    -- Admin Verification Check
+    local IsAdmin = (LocalPlayer.UserId == ADMIN_ID)
+    if IsAdmin then
+        local VerifyIcon = Instance.new("ImageLabel")
+        VerifyIcon.Size = UDim2.fromOffset(14, 14)
+        VerifyIcon.Position = UDim2.new(0, 118, 0, 9) -- Adjusted position for smaller sidebar
+        VerifyIcon.Image = ICONS.Verified
+        VerifyIcon.BackgroundTransparency = 1
+        VerifyIcon.Parent = ProfileFrame
+    end
+
+    local RoleLabel = Instance.new("TextLabel")
+    RoleLabel.Size = UDim2.new(0, 95, 0, 14)
+    RoleLabel.Position = UDim2.new(0, 46, 0, 25)
+    RoleLabel.Text = IsAdmin and "Developer Of The Library" or ("ID: " .. tostring(LocalPlayer.UserId))
+    RoleLabel.Font = Enum.Font.Gotham
+    RoleLabel.TextColor3 = IsAdmin and HaroonWindUI.Theme.AccentRed or HaroonWindUI.Theme.SubText
+    RoleLabel.TextSize = 8
+    RoleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    RoleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    RoleLabel.BackgroundTransparency = 1
+    RoleLabel.Parent = ProfileFrame
+
+    -- Create Tab Method
+    function WindowObj:CreateTab(tabName)
+        local TabBtn = Instance.new("TextButton")
+        TabBtn.Size = UDim2.new(1, 0, 0, 30)
+        TabBtn.BackgroundTransparency = 1
+        TabBtn.Text = tabName
+        TabBtn.TextColor3 = HaroonWindUI.Theme.TextInactive
+        TabBtn.Font = Enum.Font.GothamMedium
+        TabBtn.TextSize = 12
+        TabBtn.TextXAlignment = Enum.TextXAlignment.Left
+        TabBtn.AutoButtonColor = false
+        TabBtn.Parent = TabsHolder
+
+        local TabPadding = Instance.new("UIPadding")
+        TabPadding.PaddingLeft = UDim.new(0, 12)
+        TabPadding.PaddingRight = UDim.new(0, 10)
+        TabPadding.Parent = TabBtn
+
+        local TabCorner = Instance.new("UICorner")
+        TabCorner.CornerRadius = UDim.new(0, 6)
+        TabCorner.Parent = TabBtn
+
+        -- Page Scrolling Frame
+        local Page = Instance.new("ScrollingFrame")
+        Page.Size = UDim2.new(1, 0, 1, 0)
+        Page.BackgroundTransparency = 1
+        Page.ScrollBarThickness = 2
+        Page.ScrollBarImageColor3 = HaroonWindUI.Theme.AccentRed
+        Page.Visible = false
+        Page.Parent = ContentContainer
+
+        local PageList = Instance.new("UIListLayout")
+        PageList.SortOrder = Enum.SortOrder.LayoutOrder
+        PageList.Padding = UDim.new(0, 8)
+        PageList.Parent = Page
+
+        local PagePadding = Instance.new("UIPadding")
+        PagePadding.PaddingTop = UDim.new(0, 10)
+        PagePadding.PaddingLeft = UDim.new(0, 12)
+        PagePadding.PaddingRight = UDim.new(0, 12)
+        PagePadding.PaddingBottom = UDim.new(0, 10)
+        PagePadding.Parent = Page
+
+        PageList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            Page.CanvasSize = UDim2.new(0, 0, 0, PageList.AbsoluteContentSize.Y + 20)
+        end)
+
+        local TabObj = {Page = Page, Button = TabBtn}
+
+        local function ActivateTab()
+            for _, t in pairs(WindowObj.Tabs) do
+                t.Page.Visible = false
+                FastTween(t.Button, 0.2, {TextColor3 = HaroonWindUI.Theme.TextInactive})
+            end
+            Page.Visible = true
+            FastTween(TabBtn, 0.2, {TextColor3 = HaroonWindUI.Theme.TextActive})
+            
+            -- Move Blue Indicator Frame Smoothly
+            Indicator.Visible = true
+            FastTween(Indicator, 0.25, {
+                Position = UDim2.new(0, 0, 0, TabBtn.AbsolutePosition.Y - TabsHolder.AbsolutePosition.Y + 3)
+            }, Enum.EasingStyle.Quart)
+
+            WindowObj.ActiveTab = TabObj
+        end
+
+        TabBtn.MouseButton1Click:Connect(ActivateTab)
+
+        if #WindowObj.Tabs == 0 then
+            task.defer(ActivateTab)
+        end
+
+        table.insert(WindowObj.Tabs, TabObj)
+
+        -- ================= COMPONENTS IMPLEMENTATION ================= --
+
+        -- 1. SECTION
+        function TabObj:CreateSection(sectionTitle)
+            local SecFrame = Instance.new("Frame")
+            SecFrame.Size = UDim2.new(1, 0, 0, 24)
+            SecFrame.BackgroundTransparency = 1
+            SecFrame.Parent = Page
+
+            local SecLabel = Instance.new("TextLabel")
+            SecLabel.Size = UDim2.new(1, 0, 1, 0)
+            SecLabel.Text = string.upper(sectionTitle)
+            SecLabel.Font = Enum.Font.GothamBold
+            SecLabel.TextColor3 = HaroonWindUI.Theme.AccentRed
+            SecLabel.TextSize = 10
+            SecLabel.TextXAlignment = Enum.TextXAlignment.Left
+            SecLabel.BackgroundTransparency = 1
+            SecLabel.Parent = SecFrame
+        end
+
+        -- 2. PARAGRAPH
+        function TabObj:CreateParagraph(pTitle, pContent)
+            local ParaFrame = Instance.new("Frame")
+            ParaFrame.Size = UDim2.new(1, 0, 0, 56)
+            ParaFrame.BackgroundColor3 = HaroonWindUI.Theme.Card
+            ParaFrame.Parent = Page
+
+            local Corner = Instance.new("UICorner")
+            Corner.CornerRadius = UDim.new(0, 6)
+            Corner.Parent = ParaFrame
+
+            local Title = Instance.new("TextLabel")
+            Title.Size = UDim2.new(1, -20, 0, 20)
+            Title.Position = UDim2.new(0, 10, 0, 6)
+            Title.Text = pTitle
+            Title.Font = Enum.Font.GothamBold
+            Title.TextColor3 = HaroonWindUI.Theme.TextActive
+            Title.TextSize = 12
+            Title.TextXAlignment = Enum.TextXAlignment.Left
+            Title.BackgroundTransparency = 1
+            Title.Parent = ParaFrame
+
+            local Body = Instance.new("TextLabel")
+            Body.Size = UDim2.new(1, -20, 0, 26)
+            Body.Position = UDim2.new(0, 10, 0, 24)
+            Body.Text = pContent
+            Body.Font = Enum.Font.Gotham
+            Body.TextColor3 = HaroonWindUI.Theme.SubText
+            Body.TextSize = 10
+            Body.TextWrapped = true
+            Body.TextXAlignment = Enum.TextXAlignment.Left
+            Body.BackgroundTransparency = 1
+            Body.Parent = ParaFrame
+        end
+
+        -- 3. TEXT BUTTON (With Right-Aligned Icon Support)
+        function TabObj:CreateButton(btnText, iconAssetId, callback)
+            if type(iconAssetId) == "function" then
+                callback = iconAssetId
+                iconAssetId = nil
+            end
+            callback = callback or function() end
+            iconAssetId = iconAssetId or ICONS.ButtonDefault -- Use new default icon
+
+            local Btn = Instance.new("TextButton")
+            Btn.Size = UDim2.new(1, 0, 0, 34)
+            Btn.BackgroundColor3 = HaroonWindUI.Theme.Card
+            Btn.Text = "  " .. btnText
+            Btn.TextColor3 = HaroonWindUI.Theme.TextActive
+            Btn.Font = Enum.Font.GothamMedium
+            Btn.TextSize = 12
+            Btn.TextXAlignment = Enum.TextXAlignment.Left
+            Btn.AutoButtonColor = false
+            Btn.Parent = Page
+
+            local Corner = Instance.new("UICorner")
+            Corner.CornerRadius = UDim.new(0, 6)
+            Corner.Parent = Btn
+
+            local Stroke = Instance.new("UIStroke")
+            Stroke.Color = HaroonWindUI.Theme.Border
+            Stroke.Parent = Btn
+
+            -- Right Icon Component System
+            local RightIcon = Instance.new("ImageLabel")
+            RightIcon.Size = UDim2.fromOffset(16, 16)
+            RightIcon.Position = UDim2.new(1, -26, 0.5, -8)
+            RightIcon.Image = iconAssetId
+            RightIcon.BackgroundTransparency = 1
+            RightIcon.ImageColor3 = HaroonWindUI.Theme.AccentRed
+            RightIcon.Parent = Btn
+
+            Btn.MouseEnter:Connect(function()
+                FastTween(Btn, 0.2, {BackgroundColor3 = HaroonWindUI.Theme.CardHover})
+            end)
+            Btn.MouseLeave:Connect(function()
+                FastTween(Btn, 0.2, {BackgroundColor3 = HaroonWindUI.Theme.Card})
+            end)
+
+            Btn.MouseButton1Click:Connect(function()
+                FastTween(Btn, 0.08, {Size = UDim2.new(1, -4, 0, 32)})
+                task.wait(0.08)
+                FastTween(Btn, 0.08, {Size = UDim2.new(1, 0, 0, 34)})
+                pcall(callback)
+            end)
+        end
+
+        -- 4. TOGGLE
+        function TabObj:CreateToggle(toggleText, default, callback)
+            default = default or false
+            callback = callback or function() end
+            local state = default
+
+            local ToggleFrame = Instance.new("Frame")
+            ToggleFrame.Size = UDim2.new(1, 0, 0, 34)
+            ToggleFrame.BackgroundColor3 = HaroonWindUI.Theme.Card
+            ToggleFrame.Parent = Page
+
+            local Corner = Instance.new("UICorner")
+            Corner.CornerRadius = UDim.new(0, 6)
+            Corner.Parent = ToggleFrame
+
+            local Label = Instance.new("TextLabel")
+            Label.Size = UDim2.new(1, -50, 1, 0)
+            Label.Position = UDim2.new(0, 10, 0, 0)
+            Label.Text = toggleText
+            Label.Font = Enum.Font.GothamMedium
+            Label.TextColor3 = HaroonWindUI.Theme.TextActive
+            Label.TextSize = 12
+            Label.TextXAlignment = Enum.TextXAlignment.Left
+            Label.BackgroundTransparency = 1
+            Label.Parent = ToggleFrame
+
+            local Switch = Instance.new("Frame")
+            Switch.Size = UDim2.new(0, 36, 0, 18)
+            Switch.Position = UDim2.new(1, -44, 0.5, -9)
+            Switch.BackgroundColor3 = state and HaroonWindUI.Theme.AccentRed or HaroonWindUI.Theme.ToggleOff
+            Switch.Parent = ToggleFrame
+
+            local SwitchCorner = Instance.new("UICorner")
+            SwitchCorner.CornerRadius = UDim.new(1, 0)
+            SwitchCorner.Parent = Switch
+
+            local Knob = Instance.new("Frame")
+            Knob.Size = UDim2.new(0, 14, 0, 14)
+            Knob.Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)
+            Knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+            Knob.Parent = Switch
+
+            local KnobCorner = Instance.new("UICorner")
+            KnobCorner.CornerRadius = UDim.new(1, 0)
+            KnobCorner.Parent = Knob
+
+            local Clicker = Instance.new("TextButton")
+            Clicker.Size = UDim2.new(1, 0, 1, 0)
+            Clicker.BackgroundTransparency = 1
+            Clicker.Text = ""
+            Clicker.Parent = ToggleFrame
+
+            Clicker.MouseButton1Click:Connect(function()
+                state = not state
+                FastTween(Switch, 0.2, {
+                    BackgroundColor3 = state and HaroonWindUI.Theme.AccentRed or HaroonWindUI.Theme.ToggleOff
+                })
+                FastTween(Knob, 0.2, {
+                    Position = state and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)
+                })
+                pcall(callback, state)
+            end)
+        end
+
+        -- 5. SLIDER
+        function TabObj:CreateSlider(sliderText, min, max, default, callback)
+            min = min or 0
+            max = max or 100
+            default = math.clamp(default or min, min, max)
+            callback = callback or function() end
+
+            local SliderFrame = Instance.new("Frame")
+            SliderFrame.Size = UDim2.new(1, 0, 0, 44)
+            SliderFrame.BackgroundColor3 = HaroonWindUI.Theme.Card
+            SliderFrame.Parent = Page
+
+            local Corner = Instance.new("UICorner")
+            Corner.CornerRadius = UDim.new(0, 6)
+            Corner.Parent = SliderFrame
+
+            local Label = Instance.new("TextLabel")
+            Label.Size = UDim2.new(0.6, 0, 0, 18)
+            Label.Position = UDim2.new(0, 10, 0, 4)
+            Label.Text = sliderText
+            Label.Font = Enum.Font.GothamMedium
+            Label.TextColor3 = HaroonWindUI.Theme.TextActive
+            Label.TextSize = 12
+            Label.TextXAlignment = Enum.TextXAlignment.Left
+            Label.BackgroundTransparency = 1
+            Label.Parent = SliderFrame
+
+            local ValueLabel = Instance.new("TextLabel")
+            ValueLabel.Size = UDim2.new(0.3, 0, 0, 18)
+            ValueLabel.Position = UDim2.new(0.7, -10, 0, 4)
+            ValueLabel.Text = tostring(default)
+            ValueLabel.Font = Enum.Font.GothamBold
+            ValueLabel.TextColor3 = HaroonWindUI.Theme.SubText
+            ValueLabel.TextSize = 11
+            ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
+            ValueLabel.BackgroundTransparency = 1
+            ValueLabel.Parent = SliderFrame -- FIX: Parent to SliderFrame
+
+            local SliderBar = Instance.new("Frame")
+            SliderBar.Size = UDim2.new(1, -20, 0, 5)
+            SliderBar.Position = UDim2.new(0, 10, 1, -12)
+            SliderBar.BackgroundColor3 = HaroonWindUI.Theme.ToggleOff
+            SliderBar.Parent = SliderFrame
+
+            local SliderBarCorner = Instance.new("UICorner")
+            SliderBarCorner.CornerRadius = UDim.new(1, 0)
+            SliderBarCorner.Parent = SliderBar
+
+            local Fill = Instance.new("Frame")
+            local startPercent = (default - min) / (max - min)
+            Fill.Size = UDim2.new(startPercent, 0, 1, 0)
+            Fill.BackgroundColor3 = HaroonWindUI.Theme.AccentRed
+            Fill.Parent = SliderBar
+
+            local FillCorner = Instance.new("UICorner")
+            FillCorner.CornerRadius = UDim.new(1, 0)
+            FillCorner.Parent = Fill
+
+            local isDragging = false
+
+            local function UpdateSlider(input)
+                local pos = math.clamp((input.Position.X - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X, 0, 1)
+                local value = math.floor(min + ((max - min) * pos))
+                ValueLabel.Text = tostring(value)
+                FastTween(Fill, 0.05, {Size = UDim2.new(pos, 0, 1, 0)})
+                pcall(callback, value)
+            end
+
+            SliderBar.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    isDragging = true
+                    UpdateSlider(input)
+                end
+            end)
+
+            UserInputService.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                    isDragging = false
+                end
+            end)
+
+            UserInputService.InputChanged:Connect(function(input)
+                if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                    UpdateSlider(input)
+                end
+            end)
+        end
+
+        -- 6. DROPDOWN (MultiSelect Support)
+        function TabObj:CreateDropdown(dropText, options, default, callback, multiSelect)
+            options = options or {}
+            callback = callback or function() end
+            multiSelect = multiSelect or false
+
+            local selectedStates = {} -- {[option: string]: boolean}
+            local currentSelectedText = "Select items..."
+
+            if not multiSelect then
+                local singleSelected = default or options[1] or "Select..."
+                selectedStates[singleSelected] = true
+                currentSelectedText = singleSelected
+            else
+                for _, opt in ipairs(options) do
+                    selectedStates[opt] = false
+                end
+                if type(default) == "table" then
+                    for _, defOpt in ipairs(default) do
+                        -- Ensure the default option exists in the options table
+                        local found = false
+                        for _, opt in ipairs(options) do
+                            if opt == defOpt then
+                                found = true
+                                break
+                            end
+                        end
+                        if found then
+                            selectedStates[defOpt] = true
+                        else
+                            warn("HaroonWindUI: Default option '" .. tostring(defOpt) .. "' not found in dropdown options.")
+                        end
+                    end
+                end
+            end
+
+            local isExpanded = false
+
+            local DropFrame = Instance.new("Frame")
+            DropFrame.Size = UDim2.new(1, 0, 0, 36)
+            DropFrame.BackgroundColor3 = HaroonWindUI.Theme.Card
+            DropFrame.ClipsDescendants = true
+            DropFrame.Parent = Page
+
+            local Corner = Instance.new("UICorner")
+            Corner.CornerRadius = UDim.new(0, 6)
+            Corner.Parent = DropFrame
+
+            local Label = Instance.new("TextLabel")
+            Label.Size = UDim2.new(0.5, 0, 0, 36)
+            Label.Position = UDim2.new(0, 10, 0, 0)
+            Label.Text = dropText
+            Label.Font = Enum.Font.GothamMedium
+            Label.TextColor3 = HaroonWindUI.Theme.TextActive
+            Label.TextSize = 12
+            Label.TextXAlignment = Enum.TextXAlignment.Left
+            Label.BackgroundTransparency = 1
+            Label.Parent = DropFrame
+
+            local SelectedLabel = Instance.new("TextLabel")
+            SelectedLabel.Size = UDim2.new(0.4, 0, 0, 36)
+            SelectedLabel.Position = UDim2.new(0.55, -10, 0, 0)
+            SelectedLabel.Text = currentSelectedText .. "  ▼"
+            SelectedLabel.Font = Enum.Font.Gotham
+            SelectedLabel.TextColor3 = HaroonWindUI.Theme.AccentRed
+            SelectedLabel.TextSize = 11
+            SelectedLabel.TextXAlignment = Enum.TextXAlignment.Right
+            SelectedLabel.TextTruncate = Enum.TextTruncate.AtEnd
+            SelectedLabel.BackgroundTransparency = 1
+            SelectedLabel.Parent = DropFrame
+
+            local OptionsContainer = Instance.new("Frame")
+            OptionsContainer.Size = UDim2.new(1, -20, 0, #options * 26)
+            OptionsContainer.Position = UDim2.new(0, 10, 0, 36)
+            OptionsContainer.BackgroundTransparency = 1
+            OptionsContainer.Parent = DropFrame
+
+            local CList = Instance.new("UIListLayout")
+            CList.SortOrder = Enum.SortOrder.LayoutOrder
+            CList.Padding = UDim.new(0, 2)
+            CList.Parent = OptionsContainer
+
+            local function updateSelectedLabel()
+                local selectedItems = {}
+                for opt, state in pairs(selectedStates) do
+                    if state then
+                        table.insert(selectedItems, opt)
+                    end
+                end
+                if #selectedItems > 0 then
+                    SelectedLabel.Text = table.concat(selectedItems, ", ") .. "  ▼"
+                else
+                    SelectedLabel.Text = "Select items..." .. "  ▼"
+                end
+            end
+
+            for _, option in ipairs(options) do
+                local OptBtn = Instance.new("TextButton")
+                OptBtn.Name = "Option_" .. option:gsub("%s+", "_") -- Unique name for option button
+                OptBtn.Size = UDim2.new(1, 0, 0, 24)
+                OptBtn.BackgroundColor3 = selectedStates[option] and HaroonWindUI.Theme.MultiSelectSelected or HaroonWindUI.Theme.Sidebar
+                OptBtn.Text = "  " .. option
+                OptBtn.Font = Enum.Font.Gotham
+                OptBtn.TextColor3 = selectedStates[option] and HaroonWindUI.Theme.TextActive or HaroonWindUI.Theme.SubText
+                OptBtn.TextSize = 11
+                OptBtn.TextXAlignment = Enum.TextXAlignment.Left
+                OptBtn.AutoButtonColor = false
+                OptBtn.Parent = OptionsContainer
+
+                local OptCorner = Instance.new("UICorner")
+                OptCorner.CornerRadius = UDim.new(0, 4)
+                OptCorner.Parent = OptBtn
+
+                if multiSelect then
+                    local Checkmark = Instance.new("ImageLabel")
+                    Checkmark.Name = "Checkmark"
+                    Checkmark.Size = UDim2.fromOffset(14, 14)
+                    Checkmark.Position = UDim2.new(1, -20, 0.5, -7)
+                    Checkmark.Image = ICONS.Checkmark
+                    Checkmark.ImageColor3 = HaroonWindUI.Theme.AccentRed
+                    Checkmark.BackgroundTransparency = 1
+                    Checkmark.Visible = selectedStates[option]
+                    Checkmark.Parent = OptBtn
+                end
+
+                OptBtn.MouseButton1Click:Connect(function()
+                    if multiSelect then
+                        selectedStates[option] = not selectedStates[option]
+                        FastTween(OptBtn, 0.15, {BackgroundColor3 = selectedStates[option] and HaroonWindUI.Theme.MultiSelectSelected or HaroonWindUI.Theme.Sidebar})
+                        FastTween(OptBtn, 0.15, {TextColor3 = selectedStates[option] and HaroonWindUI.Theme.TextActive or HaroonWindUI.Theme.SubText})
+                        if multiSelect and OptBtn:FindFirstChild("Checkmark") then OptBtn.Checkmark.Visible = selectedStates[option] end
+                        updateSelectedLabel()
+                        pcall(callback, selectedStates)
+                    else
+                        for opt, _ in pairs(selectedStates) do
+                            selectedStates[opt] = false
+                            local prevBtn = OptionsContainer:FindFirstChild("Option_" .. opt:gsub("%s+", "_"))
+                            if prevBtn then
+                                FastTween(prevBtn, 0.15, {BackgroundColor3 = HaroonWindUI.Theme.Sidebar})
+                                FastTween(prevBtn, 0.15, {TextColor3 = HaroonWindUI.Theme.SubText})
+                            end
+                        end
+                        selectedStates[option] = true
+                        FastTween(OptBtn, 0.15, {BackgroundColor3 = HaroonWindUI.Theme.MultiSelectSelected})
+                        FastTween(OptBtn, 0.15, {TextColor3 = HaroonWindUI.Theme.TextActive})
+                        SelectedLabel.Text = option .. "  ▼"
+                        isExpanded = false
+                        FastTween(DropFrame, 0.2, {Size = UDim2.new(1, 0, 0, 36)})
+                        pcall(callback, option)
+                    end
+                end)
+            end
+
+            local ToggleBtn = Instance.new("TextButton")
+            ToggleBtn.Size = UDim2.new(1, 0, 0, 36)
+            ToggleBtn.BackgroundTransparency = 1
+            ToggleBtn.Text = ""
+            ToggleBtn.Parent = DropFrame
+
+            ToggleBtn.MouseButton1Click:Connect(function()
+                isExpanded = not isExpanded
+                local targetHeight = isExpanded and (38 + (#options * 26)) or 36
+                FastTween(DropFrame, 0.25, {Size = UDim2.new(1, 0, 0, targetHeight)})
+            end)
+
+            updateSelectedLabel() -- Initial update
+        end
+
+        return TabObj
+    end
+
+    return WindowObj
+end
+
+-- Notification Toast System
+function HaroonWindUI:Notify(config)
+    config = config or {}
+    local title = config.Title or "Notification"
+    local content = config.Content or ""
+    local duration = config.Duration or 3
+
+    PlayNotificationSound() -- Play sound on notification
+
+    local parentUI = GetUIParent()
+    local Holder = parentUI:FindFirstChild("HaroonNotificationHolder")
+
+    if not Holder then
+        Holder = Instance.new("Frame")
+        Holder.Name = "HaroonNotificationHolder"
+        Holder.Size = UDim2.new(0, 240, 1, 0)
+        Holder.Position = UDim2.new(1, -250, 0, 15)
+        Holder.BackgroundTransparency = 1
+        Holder.Parent = parentUI
+
+        local Layout = Instance.new("UIListLayout")
+        Layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+        Layout.Padding = UDim.new(0, 6)
+        Layout.Parent = Holder
+    end
+
+    local Toast = Instance.new("Frame")
+    Toast.Size = UDim2.new(1, 0, 0, 65) -- Increased height for time bar
+    Toast.BackgroundColor3 = HaroonWindUI.Theme.Card
+    Toast.Position = UDim2.new(0, -Toast.Size.X.Offset, 0, 0) -- Start off-screen left
+    Toast.Parent = Holder
+
+    local ToastCorner = Instance.new("UICorner")
+    ToastCorner.CornerRadius = UDim.new(0, 6)
+    ToastCorner.Parent = Toast
+
+    local ToastStroke = Instance.new("UIStroke")
+    ToastStroke.Color = HaroonWindUI.Theme.AccentRed
+    ToastStroke.Thickness = 1
+    ToastStroke.Parent = Toast
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -20, 0, 18)
+    TitleLabel.Position = UDim2.new(0, 8, 0, 5)
+    TitleLabel.Text = title
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextColor3 = HaroonWindUI.Theme.TextActive
+    TitleLabel.TextSize = 12
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Parent = Toast
+
+    local ContentLabel = Instance.new("TextLabel")
+    ContentLabel.Size = UDim2.new(1, -20, 0, 20)
+    ContentLabel.Position = UDim2.new(0, 8, 0, 23)
+    ContentLabel.Text = content
+    ContentLabel.Font = Enum.Font.Gotham
+    ContentLabel.TextColor3 = HaroonWindUI.Theme.SubText
+    ContentLabel.TextSize = 10
+    ContentLabel.TextXAlignment = Enum.TextXAlignment.Left
+    ContentLabel.BackgroundTransparency = 1
+    ContentLabel.Parent = Toast
+
+    -- Close Button for Notification
+    local CloseBtn = Instance.new("ImageButton")
+    CloseBtn.Size = UDim2.fromOffset(16, 16)
+    CloseBtn.Position = UDim2.new(1, -24, 0, 8)
+    CloseBtn.Image = ICONS.Close
+    CloseBtn.ImageColor3 = HaroonWindUI.Theme.NotificationClose
+    CloseBtn.BackgroundTransparency = 1
+    CloseBtn.Parent = Toast
+
+    CloseBtn.MouseButton1Click:Connect(function()
+        FastTween(Toast, 0.3, {Position = UDim2.new(0, -Toast.Size.X.Offset, 0, 0)}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+            .Completed:Connect(function()
+                Toast:Destroy()
+            end)
+    end)
+
+    -- Time Bar
+    local TimeBar = Instance.new("Frame")
+    TimeBar.Size = UDim2.new(1, -16, 0, 4)
+    TimeBar.Position = UDim2.new(0, 8, 1, -10)
+    TimeBar.BackgroundColor3 = HaroonWindUI.Theme.ToggleOff
+    TimeBar.Parent = Toast
+
+    local TimeBarCorner = Instance.new("UICorner")
+    TimeBarCorner.CornerRadius = UDim.new(1, 0)
+    TimeBarCorner.Parent = TimeBar
+
+    local TimeFill = Instance.new("Frame")
+    TimeFill.Size = UDim2.new(1, 0, 1, 0)
+    TimeFill.BackgroundColor3 = HaroonWindUI.Theme.AccentRed
+    TimeFill.Parent = TimeBar
+
+    local TimeFillCorner = Instance.new("UICorner")
+    TimeFillCorner.CornerRadius = UDim.new(1, 0)
+    TimeFillCorner.Parent = TimeFill
+
+    local TimeText = Instance.new("TextLabel")
+    TimeText.Size = UDim2.new(1, 0, 1, 0)
+    TimeText.Text = tostring(duration) .. "s"
+    TimeText.Font = Enum.Font.Gotham
+    TimeText.TextColor3 = HaroonWindUI.Theme.TextActive
+    TimeText.TextSize = 8
+    TimeText.BackgroundTransparency = 1
+    TimeText.Parent = TimeBar
+
+    -- Appear animation (from left to right)
+    FastTween(Toast, 0.3, {Position = UDim2.new(0, 0, 0, 0)}, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+
+    -- Countdown logic
+    task.spawn(function()
+        local remainingTime = duration
+        while remainingTime > 0 and Toast.Parent do
+            TimeText.Text = tostring(math.ceil(remainingTime)) .. "s"
+            FastTween(TimeFill, 0.1, {Size = UDim2.new(remainingTime / duration, 0, 1, 0)})
+            remainingTime = remainingTime - 0.1
+            task.wait(0.1)
+        end
+        if Toast.Parent then
+            -- Disappear animation (to left)
+            FastTween(Toast, 0.3, {Position = UDim2.new(0, -Toast.Size.X.Offset, 0, 0)}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+                .Completed:Connect(function()
+                    Toast:Destroy()
+                end)
+        end
+    end)
+end
+
+-- ====================================================================================
+-- Key System Implementation
+-- ====================================================================================
+local function CreateKeySystem(onKeyValidated)
+    local KeyScreenGui = Instance.new("ScreenGui")
+    KeyScreenGui.Name = "HaroonKeySystemGui"
+    KeyScreenGui.ResetOnSpawn = false
+    KeyScreenGui.Parent = GetUIParent()
+
+    local Background = Instance.new("Frame")
+    Background.Size = UDim2.new(1, 0, 1, 0)
+    Background.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    Background.BackgroundTransparency = 0.7
+    Background.Parent = KeyScreenGui
+
+    local KeyFrame = Instance.new("Frame")
+    KeyFrame.Size = UDim2.new(0, 300, 0, 200)
+    KeyFrame.Position = UDim2.new(0.5, -150, 0.5, -100)
+    KeyFrame.BackgroundColor3 = HaroonWindUI.Theme.KeySystemBg
+    KeyFrame.BorderSizePixel = 0
+    KeyFrame.Parent = Background
+
+    local KeyCorner = Instance.new("UICorner")
+    KeyCorner.CornerRadius = UDim.new(0, 10)
+    KeyCorner.Parent = KeyFrame
+
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, -20, 0, 20)
+    Title.Position = UDim2.new(0, 10, 0, 15)
+    Title.Text = "Welcome, loading"
+    Title.Font = Enum.Font.GothamBold
+    Title.TextColor3 = HaroonWindUI.Theme.TextActive
+    Title.TextSize = 14
+    Title.BackgroundTransparency = 1
+    Title.Parent = KeyFrame
+
+    local Subtitle = Instance.new("TextLabel")
+    Subtitle.Size = UDim2.new(1, -20, 0, 20)
+    Subtitle.Position = UDim2.new(0, 10, 0, 35)
+    Subtitle.Text = "Enter key to continue"
+    Subtitle.Font = Enum.Font.Gotham
+    Subtitle.TextColor3 = HaroonWindUI.Theme.SubText
+    Subtitle.TextSize = 12
+    Subtitle.BackgroundTransparency = 1
+    Subtitle.Parent = KeyFrame
+
+    local KeyLabel = Instance.new("TextLabel")
+    KeyLabel.Size = UDim2.new(0, 50, 0, 20)
+    KeyLabel.Position = UDim2.new(0, 10, 0, 65)
+    KeyLabel.Text = "Key"
+    KeyLabel.Font = Enum.Font.Gotham
+    KeyLabel.TextColor3 = HaroonWindUI.Theme.TextInactive
+    KeyLabel.TextSize = 12
+    KeyLabel.TextXAlignment = Enum.TextXAlignment.Left
+    KeyLabel.BackgroundTransparency = 1
+    KeyLabel.Parent = KeyFrame
+
+    local KeyTextBox = Instance.new("TextBox")
+    KeyTextBox.Size = UDim2.new(1, -20, 0, 30)
+    KeyTextBox.Position = UDim2.new(0, 10, 0, 85)
+    KeyTextBox.PlaceholderText = "Enter your key here..."
+    KeyTextBox.Text = ""
+    KeyTextBox.Font = Enum.Font.Gotham
+    KeyTextBox.TextColor3 = HaroonWindUI.Theme.TextActive
+    KeyTextBox.TextSize = 12
+    KeyTextBox.BackgroundColor3 = HaroonWindUI.Theme.Card
+    KeyTextBox.BorderSizePixel = 0
+    KeyTextBox.TextXAlignment = Enum.TextXAlignment.Left
+    KeyTextBox.Parent = KeyFrame
+
+    local KeyTextBoxCorner = Instance.new("UICorner")
+    KeyTextBoxCorner.CornerRadius = UDim.new(0, 6)
+    KeyTextBoxCorner.Parent = KeyTextBox
+
+    local PasteButton = Instance.new("TextButton")
+    PasteButton.Size = UDim2.new(1, -20, 0, 25)
+    PasteButton.Position = UDim2.new(0, 10, 0, 120)
+    PasteButton.Text = "Click to enter key"
+    PasteButton.Font = Enum.Font.GothamBold
+    PasteButton.TextColor3 = HaroonWindUI.Theme.TextActive
+    PasteButton.TextSize = 12
+    PasteButton.BackgroundColor3 = HaroonWindUI.Theme.CardHover
+    PasteButton.BorderSizePixel = 0
+    PasteButton.Parent = KeyFrame
+
+    local PasteButtonCorner = Instance.new("UICorner")
+    PasteButtonCorner.CornerRadius = UDim.new(0, 6)
+    PasteButtonCorner.Parent = PasteButton
+
+    PasteButton.MouseButton1Click:Connect(function()
+        local clipboardText = UserInputService:GetClipboard()
+        if clipboardText then
+            KeyTextBox.Text = clipboardText
+        end
+    end)
+
+    local GetKeyLabel = Instance.new("TextButton")
+    GetKeyLabel.Size = UDim2.new(1, -20, 0, 15)
+    GetKeyLabel.Position = UDim2.new(0, 10, 0, 150)
+    GetKeyLabel.Text = "<font color=\"#AABBCF\">Don't have a key? </font><font color=\"#607D8B\"><u>Click here to get one.</u></font>"
+    GetKeyLabel.RichText = true
+    GetKeyLabel.Font = Enum.Font.Gotham
+    GetKeyLabel.TextColor3 = HaroonWindUI.Theme.SubText
+    GetKeyLabel.TextSize = 10
+    GetKeyLabel.TextXAlignment = Enum.TextXAlignment.Left
+    GetKeyLabel.BackgroundTransparency = 1
+    GetKeyLabel.AutoButtonColor = false
+    GetKeyLabel.Parent = KeyFrame
+
+    GetKeyLabel.MouseButton1Click:Connect(function()
+        warn("HaroonWindUI: User clicked 'Get Key'. You can implement a web link here.")
+        HaroonWindUI:Notify({Title = "Get Key", Content = "Please visit our website to get a key!", Duration = 4})
+    end)
+
+    local ConfirmButton = Instance.new("TextButton")
+    ConfirmButton.Size = UDim2.new(1, -20, 0, 30)
+    ConfirmButton.Position = UDim2.new(0, 10, 0, 165)
+    ConfirmButton.Text = "Confirm"
+    ConfirmButton.Font = Enum.Font.GothamBold
+    ConfirmButton.TextColor3 = HaroonWindUI.Theme.TextActive
+    ConfirmButton.TextSize = 14
+    ConfirmButton.BackgroundColor3 = HaroonWindUI.Theme.KeySystemAccent
+    ConfirmButton.BorderSizePixel = 0
+    ConfirmButton.Parent = KeyFrame
+
+    local ConfirmButtonCorner = Instance.new("UICorner")
+    ConfirmButtonCorner.CornerRadius = UDim.new(0, 6)
+    ConfirmButtonCorner.Parent = ConfirmButton
+
+    ConfirmButton.MouseButton1Click:Connect(function()
+        if KeyTextBox.Text == REQUIRED_KEY then
+            HaroonWindUI:Notify({Title = "Key Validated", Content = "Key accepted! Loading UI...", Duration = 3})
+            FastTween(KeyFrame, 0.3, {BackgroundTransparency = 1, Position = UDim2.new(0.5, -150, 0.5, -300)}, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+            FastTween(Background, 0.3, {BackgroundTransparency = 1})
+            task.wait(0.3)
+            KeyScreenGui:Destroy()
+            onKeyValidated()
+        else
+            HaroonWindUI:Notify({Title = "Key Error", Content = "Invalid key. Please try again.", Duration = 3})
+        end
+    end)
+
+    -- Initial animation for KeyFrame
+    KeyFrame.Position = UDim2.new(0.5, -150, 0.5, -300) -- Start above center
+    FastTween(KeyFrame, 0.5, {Position = UDim2.new(0.5, -150, 0.5, -100)}, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out)
+end
+
+-- ====================================================================================
+-- Loading Screen Implementation
+-- ====================================================================================
+local function CreateLoadingScreen(onLoadingComplete)
+    local LoadingScreenGui = Instance.new("ScreenGui")
+    LoadingScreenGui.Name = "HaroonLoadingScreenGui"
+    LoadingScreenGui.ResetOnSpawn = false
+    LoadingScreenGui.Parent = GetUIParent()
+
+    local Background = Instance.new("Frame")
+    Background.Size = UDim2.new(1, 0, 1, 0)
+    Background.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    Background.BackgroundTransparency = 0.7
+    Background.Parent = LoadingScreenGui
+
+    local LoadingFrame = Instance.new("Frame")
+    LoadingFrame.Size = UDim2.new(0, 350, 0, 200)
+    LoadingFrame.Position = UDim2.new(0.5, -175, 0.5, -100)
+    LoadingFrame.BackgroundColor3 = HaroonWindUI.Theme.LoadingBg
+    LoadingFrame.BorderSizePixel = 0
+    LoadingFrame.Parent = Background
+
+    local LoadingCorner = Instance.new("UICorner")
+    LoadingCorner.CornerRadius = UDim.new(0, 10)
+    LoadingCorner.Parent = LoadingFrame
+
+    local GameNameLabel = Instance.new("TextLabel")
+    GameNameLabel.Size = UDim2.new(1, 0, 0, 20)
+    GameNameLabel.Position = UDim2.new(0, 0, 0, 15)
+    GameNameLabel.Text = "HAROON STUDIO"
+    GameNameLabel.Font = Enum.Font.GothamBold
+    GameNameLabel.TextColor3 = HaroonWindUI.Theme.TextActive
+    GameNameLabel.TextSize = 16
+    GameNameLabel.BackgroundTransparency = 1
+    GameNameLabel.Parent = LoadingFrame
+
+    local Spinner = Instance.new("ImageLabel")
+    Spinner.Size = UDim2.fromOffset(60, 60)
+    Spinner.Position = UDim2.new(0.5, -30, 0, 45)
+    Spinner.Image = ICONS.LoadingSpinner
+    Spinner.ImageColor3 = HaroonWindUI.Theme.AccentRed
+    Spinner.BackgroundTransparency = 1
+    Spinner.Parent = LoadingFrame
+
+    task.spawn(function()
+        while Spinner.Parent do
+            FastTween(Spinner, 1, {Rotation = Spinner.Rotation + 360}, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+            task.wait(1)
+        end
+    end)
+
+    local ProgressBar = Instance.new("Frame")
+    ProgressBar.Size = UDim2.new(1, -40, 0, 8)
+    ProgressBar.Position = UDim2.new(0.5, -150, 0, 120)
+    ProgressBar.BackgroundColor3 = HaroonWindUI.Theme.Card
+    ProgressBar.BorderSizePixel = 0
+    ProgressBar.Parent = LoadingFrame
+
+    local ProgressBarCorner = Instance.new("UICorner")
+    ProgressBarCorner.CornerRadius = UDim.new(1, 0)
+    ProgressBarCorner.Parent = ProgressBar
+
+    local ProgressFill = Instance.new("Frame")
+    ProgressFill.Size = UDim2.new(0, 0, 1, 0)
+    ProgressFill.BackgroundColor3 = HaroonWindUI.Theme.AccentRed
+    ProgressFill.BorderSizePixel = 0
+    ProgressFill.Parent = ProgressBar
+
+    local ProgressFillCorner = Instance.new("UICorner")
+    ProgressFillCorner.CornerRadius = UDim.new(1, 0)
+    ProgressFillCorner.Parent = ProgressFill
+
+    local ProgressText = Instance.new("TextLabel")
+    ProgressText.Size = UDim2.new(1, 0, 0, 15)
+    ProgressText.Position = UDim2.new(0, 0, 0, 130)
+    ProgressText.Text = "0%"
+    ProgressText.Font = Enum.Font.GothamBold
+    ProgressText.TextColor3 = HaroonWindUI.Theme.TextActive
+    ProgressText.TextSize = 10
+    ProgressText.BackgroundTransparency = 1
+    ProgressText.Parent = LoadingFrame
+
+    local TipsLabel = Instance.new("TextLabel")
+    TipsLabel.Size = UDim2.new(1, 0, 0, 15)
+    TipsLabel.Position = UDim2.new(0, 0, 0, 145)
+    TipsLabel.Text = "Loading tips..."
+    TipsLabel.Font = Enum.Font.Gotham
+    TipsLabel.TextColor3 = HaroonWindUI.Theme.SubText
+    TipsLabel.TextSize = 10
+    TipsLabel.BackgroundTransparency = 1
+    TipsLabel.Parent = LoadingFrame
+
+    local SkipButton = Instance.new("TextButton")
+    SkipButton.Size = UDim2.new(0, 100, 0, 25)
+    SkipButton.Position = UDim2.new(0.5, -50, 0, 170)
+    SkipButton.Text = "Skip Loading"
+    SkipButton.Font = Enum.Font.GothamBold
+    SkipButton.TextColor3 = HaroonWindUI.Theme.TextActive
+    SkipButton.TextSize = 12
+    SkipButton.BackgroundColor3 = HaroonWindUI.Theme.CardHover
+    SkipButton.BorderSizePixel = 0
+    SkipButton.Parent = LoadingFrame
+
+    local SkipButtonCorner = Instance.new("UICorner")
+    SkipButtonCorner.CornerRadius = UDim.new(0, 6)
+    SkipButtonCorner.Parent = SkipButton
+
+    local loadingTips = {
+        "Optimizing scripts for faster execution...",
+        "Initializing UI components...",
+        "Fetching latest configurations...",
+        "Preparing your experience...",
+        "Almost there, hang tight!",
+        "Ensuring maximum performance...",
+        "Loading game assets..."
+    }
+    local currentTipIndex = 1
+
+    local function updateProgress(progress)
+        FastTween(ProgressFill, 0.2, {Size = UDim2.new(progress / 100, 0, 1, 0)})
+        ProgressText.Text = math.floor(progress) .. "%"
+        if progress % 20 == 0 then -- Change tip every 20%
+            currentTipIndex = (currentTipIndex % #loadingTips) + 1
+            TipsLabel.Text = loadingTips[currentTipIndex]
+        end
+    end
+
+    local function finishLoading()
+        FastTween(LoadingFrame, 0.3, {BackgroundTransparency = 1, Position = UDim2.new(0.5, -175, 0.5, -300)}, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+        FastTween(Background, 0.3, {BackgroundTransparency = 1})
+        task.wait(0.3)
+        LoadingScreenGui:Destroy()
+        onLoadingComplete()
+    end
+
+    SkipButton.MouseButton1Click:Connect(finishLoading)
+
+    -- Simulate loading progress
+    task.spawn(function()
+        for i = 0, 100, 5 do
+            if not LoadingScreenGui.Parent then break end -- Stop if skipped
+            updateProgress(i)
+            task.wait(0.2)
+        end
+        if LoadingScreenGui.Parent then
+            updateProgress(100)
+            task.wait(0.5)
+            finishLoading()
+        end
+    end)
+
+    -- Initial animation for LoadingFrame
+    LoadingFrame.Position = UDim2.new(0.5, -175, 0.5, -300) -- Start above center
+    FastTween(LoadingFrame, 0.5, {Position = UDim2.new(0.5, -175, 0.5, -100)}, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out)
+end
+
+-- ====================================================================================
+-- Movable UI Toggle Button
+-- ====================================================================================
+local function CreateUIToggleButton(mainUIFrame)
+    local parentUI = GetUIParent()
+    local ToggleScreenGui = Instance.new("ScreenGui")
+    ToggleScreenGui.Name = "HaroonUIToggleButton"
+    ToggleScreenGui.ResetOnSpawn = false
+    ToggleScreenGui.Parent = parentUI
+
+    local ToggleButton = Instance.new("ImageButton")
+    ToggleButton.Name = "ToggleButton"
+    ToggleButton.Size = UDim2.fromOffset(40, 40)
+    ToggleButton.Position = UDim2.new(1, -50, 0, 10) -- Default top-right
+    ToggleButton.BackgroundTransparency = 1
+    ToggleButton.Image = ICONS.ToggleUI
+    ToggleButton.ImageColor3 = HaroonWindUI.Theme.AccentRed
+    ToggleButton.Parent = ToggleScreenGui
+
+    local ToggleCorner = Instance.new("UICorner")
+    ToggleCorner.CornerRadius = UDim.new(0, 10)
+    ToggleCorner.Parent = ToggleButton
+
+    EnableSmoothDrag(ToggleButton, ToggleButton) -- Make the button itself draggable
+
+    ToggleButton.MouseButton1Click:Connect(function()
+        if mainUIFrame and mainUIFrame.Parent then
+            mainUIFrame.Visible = not mainUIFrame.Visible
+            HaroonWindUI:Notify({Title = "UI Toggle", Content = "UI visibility: " .. tostring(mainUIFrame.Visible), Duration = 2})
+        else
+            warn("HaroonWindUI: Main UI frame is not available to toggle.")
+        end
+    end)
+end
+
+-- Make HaroonWindUI globally accessible for Delta UI
+getgenv().HaroonWindUI = HaroonWindUI
+
+-- Initial setup: Start with Key System
+task.spawn(function()
+    CreateKeySystem(function()
+        -- Key validated, proceed to loading screen
+        CreateLoadingScreen(function()
+            -- Loading complete, create and show main UI
+            local Window = HaroonWindUI:CreateWindow({
+                Title = "Haroon Studio",
+                SubTitle = "PRO EDITION"
+            })
+            Window:Show() -- Show the main window with animation
+
+            -- Create the movable UI toggle button
+            CreateUIToggleButton(Window.MainFrame)
+
+            -- Example usage (can be moved to a separate script if preferred)
+            HaroonWindUI:Notify({
+                Title = "مرحباً بك في HaroonWindUI!",
+                Content = "تم تحميل المكتبة بنجاح مع ثيم الأحمر والأسود.",
+                Duration = 5
+            })
+
+            local MainTab = Window:CreateTab("Main Hub")
+            MainTab:CreateSection("General Options")
+            MainTab:CreateParagraph("Welcome Note", "هذه مكتبة HaroonWindUI المطورة بالكامل بأعلى معايير الأداء والأمان. استمتع بالتصميم الجديد!")
+            MainTab:CreateButton("Teleport To Spawn", function()
+                local Character = game.Players.LocalPlayer.Character
+                if Character and Character:FindFirstChild("HumanoidRootPart") then
+                    Character.HumanoidRootPart.CFrame = CFrame.new(0, 100, 0)
+                    HaroonWindUI:Notify({Title = "Teleport", Content = "تم نقلك إلى نقطة البداية!", Duration = 2})
+                else
+                    HaroonWindUI:Notify({Title = "Error", Content = "لا يمكن العثور على الشخصية أو HumanoidRootPart.", Duration = 3})
+                end
+            end)
+            MainTab:CreateToggle("Infinite Jump", true, function(Value)
+                print("Toggle Infinite Jump:", Value)
+                local Humanoid = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                if Humanoid then
+                    Humanoid.JumpPower = Value and 100 or 50
+                end
+            end)
+            MainTab:CreateSlider("WalkSpeed", 16, 250, 50, function(Value)
+                local Humanoid = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+                if Humanoid then
+                    Humanoid.WalkSpeed = Value
+                end
+            end)
+
+            local SettingsTab = Window:CreateTab("Settings")
+            SettingsTab:CreateSection("UI Customization")
+            SettingsTab:CreateDropdown("Select Theme", {"Dark", "Light", "Custom"}, "Dark", function(Selected)
+                print("Selected Theme:", Selected)
+                HaroonWindUI:Notify({Title = "Theme Change", Content = "تم تغيير الثيم إلى: " .. Selected, Duration = 2})
+            end)
+            SettingsTab:CreateDropdown("Select Features", {"Aimbot", "ESP", "Fly", "NoClip", "SpeedHack"}, {"Aimbot", "Fly"}, true, function(SelectedStates)
+                print("Selected Features (MultiSelect):")
+                for feature, isEnabled in pairs(SelectedStates) do
+                    print(feature .. ": " .. tostring(isEnabled))
+                end
+                HaroonWindUI:Notify({Title = "Features Updated", Content = "تم تحديث الميزات المختارة.", Duration = 3})
+            end)
+            SettingsTab:CreateButton("Destroy UI Engine", function()
+                Window.ScreenGui:Destroy()
+                HaroonWindUI:Notify({Title = "UI Destroyed", Content = "تم تدمير واجهة المستخدم بنجاح.", Duration = 2})
+            end)
+        end)
+    end)
+end)
