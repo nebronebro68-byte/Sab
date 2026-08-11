@@ -1,14 +1,3 @@
--- file: HaroonWindUI_Pro_DeltaUI.lua
---[[
-    HaroonWindUI Pro - Red & Black Modern UI Edition for Delta UI & Executors
-    Engineered by Haroon AI (هارون للذكاء الاصطناعي)
-    Features: Ultra Smooth Dragging, Tab Indicator, Profile Footer with Verified Admin Check,
-              Intelligent Minimize/Maximize/Close Controls, Rainbow UIStroke,
-              MultiSelect Dropdown, Enhanced Notifications, Window Appear Animation,
-              Key System, Loading Screen, Movable Toggle Button, Notification Sound.
-    Usage: Copy and paste this script into your Delta UI executor.
-           Access the library via: getgenv().HaroonWindUI
---]]
 
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
